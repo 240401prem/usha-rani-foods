@@ -5,9 +5,10 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 type View = "home" | "menu" | "orders" | "admin";
 type AdminTab = "overview" | "menu" | "orders" | "customers";
 type OrderStatus = "Pending" | "Preparing" | "Out for Delivery" | "Delivered";
+type FoodId = string | number;
 
 type Food = {
-  id: number;
+  id: FoodId;
   name: string;
   tamil: string;
   price: number;
@@ -22,6 +23,7 @@ type CartItem = Food & { quantity: number };
 
 type Order = {
   id: string;
+  databaseId?: string;
   customer: string;
   mobile: string;
   address: string;
@@ -139,8 +141,49 @@ const seededOrders: Order[] = [
 
 const categories = ["All", "Rice", "Chicken", "Mutton", "Specials", "Sides"];
 const statusSteps: OrderStatus[] = ["Pending", "Preparing", "Out for Delivery", "Delivered"];
+const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/$/, "");
 
 const money = (value: number) => `₹${value.toLocaleString("en-IN")}`;
+
+function foodFromApi(item: Record<string, unknown>): Food {
+  return {
+    id: String(item.id),
+    name: String(item.name),
+    tamil: String(item.tamil_name ?? ""),
+    price: Number(item.price),
+    category: String(item.category),
+    rating: Number(item.rating ?? 4.8),
+    description: String(item.description),
+    image: String(item.image_url),
+    tag: String(item.badge ?? ""),
+  };
+}
+
+function orderFromApi(order: Record<string, unknown>): Order {
+  const items = Array.isArray(order.order_items) ? order.order_items : [];
+  return {
+    id: String(order.order_number),
+    databaseId: String(order.id),
+    customer: String(order.customer_name),
+    mobile: String(order.customer_mobile),
+    address: String(order.delivery_address),
+    items: items.map((item) => ({
+      id: String((item as Record<string, unknown>).menu_item_id ?? (item as Record<string, unknown>).id),
+      name: String((item as Record<string, unknown>).item_name),
+      tamil: "",
+      price: Number((item as Record<string, unknown>).unit_price),
+      category: "",
+      rating: 0,
+      description: "",
+      image: "",
+      quantity: Number((item as Record<string, unknown>).quantity),
+    })),
+    total: Number(order.total),
+    status: order.status as OrderStatus,
+    time: new Date(String(order.created_at)).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }),
+    payment: String(order.payment_method),
+  };
+}
 
 export function FoodApp() {
   const [view, setView] = useState<View>("home");
@@ -149,7 +192,7 @@ export function FoodApp() {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [category, setCategory] = useState("All");
   const [query, setQuery] = useState("");
-  const [favorites, setFavorites] = useState<number[]>([]);
+  const [favorites, setFavorites] = useState<FoodId[]>([]);
   const [selectedFood, setSelectedFood] = useState<Food | null>(null);
   const [cartOpen, setCartOpen] = useState(false);
   const [checkoutOpen, setCheckoutOpen] = useState(false);
@@ -161,23 +204,41 @@ export function FoodApp() {
   const [adminTab, setAdminTab] = useState<AdminTab>("overview");
 
   useEffect(() => {
-    try {
-      const savedFoods = localStorage.getItem("urf-foods");
-      const savedOrders = localStorage.getItem("urf-orders");
-      const savedFavs = localStorage.getItem("urf-favorites");
-      const savedDark = localStorage.getItem("urf-dark");
-      if (savedFoods) setFoods(JSON.parse(savedFoods));
-      if (savedOrders) setOrders(JSON.parse(savedOrders));
-      if (savedFavs) setFavorites(JSON.parse(savedFavs));
-      if (savedDark === "true") setDark(true);
-    } catch {
-      // Keep the seeded experience if browser storage is unavailable.
+    async function loadData() {
+      try {
+        const savedFavs = localStorage.getItem("urf-favorites");
+        const savedDark = localStorage.getItem("urf-dark");
+        if (savedFavs) setFavorites(JSON.parse(savedFavs));
+        if (savedDark === "true") setDark(true);
+
+        if (API_URL) {
+          const response = await fetch(`${API_URL}/api/menu`);
+          if (!response.ok) throw new Error("Could not load the menu from the server.");
+          const payload = await response.json() as { menu: Record<string, unknown>[] };
+          setFoods(payload.menu.map(foodFromApi));
+          return;
+        }
+
+        const savedFoods = localStorage.getItem("urf-foods");
+        const savedOrders = localStorage.getItem("urf-orders");
+        if (savedFoods) setFoods(JSON.parse(savedFoods));
+        if (savedOrders) setOrders(JSON.parse(savedOrders));
+      } catch {
+        setToast("Could not reach the online menu. Showing the local menu instead.");
+      } finally {
+        setReady(true);
+      }
     }
-    setReady(true);
+    void loadData();
   }, []);
 
   useEffect(() => {
     if (!ready) return;
+    if (API_URL) {
+      localStorage.setItem("urf-favorites", JSON.stringify(favorites));
+      localStorage.setItem("urf-dark", String(dark));
+      return;
+    }
     localStorage.setItem("urf-foods", JSON.stringify(foods));
     localStorage.setItem("urf-orders", JSON.stringify(orders));
     localStorage.setItem("urf-favorites", JSON.stringify(favorites));
@@ -227,7 +288,7 @@ export function FoodApp() {
     setToast(`${food.name} added to your cart`);
   }
 
-  function updateQuantity(id: number, change: number) {
+  function updateQuantity(id: FoodId, change: number) {
     setCart((current) =>
       current
         .map((item) =>
@@ -237,21 +298,21 @@ export function FoodApp() {
     );
   }
 
-  function toggleFavorite(id: number) {
+  function toggleFavorite(id: FoodId) {
     setFavorites((current) =>
       current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
     );
     setToast(favorites.includes(id) ? "Removed from favourites" : "Saved to favourites");
   }
 
-  function placeOrder(details: {
+  async function placeOrder(details: {
     name: string;
     mobile: string;
     address: string;
     payment: string;
   }) {
     const id = `URF-${Math.floor(2100 + Math.random() * 700)}`;
-    const order: Order = {
+    let order: Order = {
       id,
       customer: details.name,
       mobile: details.mobile,
@@ -262,6 +323,21 @@ export function FoodApp() {
       time: "Just now",
       payment: details.payment,
     };
+    if (API_URL) {
+      try {
+        const response = await fetch(`${API_URL}/api/orders`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...details, items: cart.map(({ id: itemId, quantity }) => ({ id: itemId, quantity })) }),
+        });
+        const payload = await response.json() as { order?: Record<string, unknown>; error?: string };
+        if (!response.ok || !payload.order) throw new Error(payload.error ?? "Could not place your order.");
+        order = orderFromApi(payload.order);
+      } catch (error) {
+        setToast(error instanceof Error ? error.message : "Could not place your order.");
+        return;
+      }
+    }
     setOrders((current) => [order, ...current]);
     setCart([]);
     setCheckoutOpen(false);
@@ -450,12 +526,12 @@ function HomeView({
   onFavorite,
 }: {
   foods: Food[];
-  favorites: number[];
+  favorites: FoodId[];
   onMenu: () => void;
   onOrders: () => void;
   onAdd: (food: Food) => void;
   onSelect: (food: Food) => void;
-  onFavorite: (id: number) => void;
+  onFavorite: (id: FoodId) => void;
 }) {
   return (
     <>
@@ -573,12 +649,12 @@ function MenuView({
   foods: Food[];
   category: string;
   query: string;
-  favorites: number[];
+  favorites: FoodId[];
   onCategory: (category: string) => void;
   onQuery: (value: string) => void;
   onAdd: (food: Food) => void;
   onSelect: (food: Food) => void;
-  onFavorite: (id: number) => void;
+  onFavorite: (id: FoodId) => void;
 }) {
   return (
     <section className="menu-page section-shell">
@@ -605,7 +681,7 @@ function MenuView({
   );
 }
 
-function FoodCard({ food, favorite, onAdd, onSelect, onFavorite }: { food: Food; favorite: boolean; onAdd: (food: Food) => void; onSelect: (food: Food) => void; onFavorite: (id: number) => void }) {
+function FoodCard({ food, favorite, onAdd, onSelect, onFavorite }: { food: Food; favorite: boolean; onAdd: (food: Food) => void; onSelect: (food: Food) => void; onFavorite: (id: FoodId) => void }) {
   return (
     <article className="food-card">
       <div className="food-image-wrap" onClick={() => onSelect(food)} role="button" tabIndex={0} onKeyDown={(event) => event.key === "Enter" && onSelect(food)}>
@@ -670,7 +746,7 @@ function FoodDialog({ food, onClose, onAdd }: { food: Food; onClose: () => void;
   );
 }
 
-function CartDrawer({ cart, subtotal, deliveryFee, total, onClose, onQuantity, onMenu, onCheckout }: { cart: CartItem[]; subtotal: number; deliveryFee: number; total: number; onClose: () => void; onQuantity: (id: number, change: number) => void; onMenu: () => void; onCheckout: () => void }) {
+function CartDrawer({ cart, subtotal, deliveryFee, total, onClose, onQuantity, onMenu, onCheckout }: { cart: CartItem[]; subtotal: number; deliveryFee: number; total: number; onClose: () => void; onQuantity: (id: FoodId, change: number) => void; onMenu: () => void; onCheckout: () => void }) {
   return (
     <div className="drawer-backdrop" onMouseDown={onClose}>
       <aside className="cart-drawer" role="dialog" aria-modal="true" aria-label="Your cart" onMouseDown={(event) => event.stopPropagation()}>
@@ -685,14 +761,14 @@ function CartDrawer({ cart, subtotal, deliveryFee, total, onClose, onQuantity, o
   );
 }
 
-function CheckoutDialog({ total, onClose, onPlaceOrder }: { total: number; onClose: () => void; onPlaceOrder: (details: { name: string; mobile: string; address: string; payment: string }) => void }) {
+function CheckoutDialog({ total, onClose, onPlaceOrder }: { total: number; onClose: () => void; onPlaceOrder: (details: { name: string; mobile: string; address: string; payment: string }) => void | Promise<void> }) {
   const [error, setError] = useState("");
-  function submit(event: FormEvent<HTMLFormElement>) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const details = { name: String(data.get("name") ?? "").trim(), mobile: String(data.get("mobile") ?? "").trim(), address: String(data.get("address") ?? "").trim(), payment: String(data.get("payment") ?? "Cash on delivery") };
     if (!details.name || details.mobile.length < 10 || !details.address) { setError("Please enter your name, a valid mobile number and delivery address."); return; }
-    onPlaceOrder(details);
+    await onPlaceOrder(details);
   }
   return (
     <div className="modal-backdrop checkout-backdrop" onMouseDown={onClose}>
@@ -786,7 +862,7 @@ function AdminOverview({ orders, revenue, onTab }: { orders: Order[]; revenue: n
   );
 }
 
-function AdminMenu({ foods, onAdd, onEdit, onDelete }: { foods: Food[]; onAdd: () => void; onEdit: (food: Food) => void; onDelete: (id: number) => void }) {
+function AdminMenu({ foods, onAdd, onEdit, onDelete }: { foods: Food[]; onAdd: () => void; onEdit: (food: Food) => void; onDelete: (id: FoodId) => void }) {
   return <section className="dashboard-panel admin-menu-panel"><div className="panel-head"><div><h2>Your menu</h2><p>{foods.length} dishes available today</p></div><button className="primary-button" onClick={onAdd}>+ Add food item</button></div><div className="admin-food-grid">{foods.map((food) => <article key={food.id}>{/* eslint-disable-next-line @next/next/no-img-element */}<img src={food.image} alt={food.name} /><div><span>{food.category}</span><h3>{food.name}</h3><p>{food.description}</p><strong>{money(food.price)}</strong><div><button onClick={() => onEdit(food)}>Edit</button><button className="danger" onClick={() => onDelete(food.id)}>Delete</button></div></div></article>)}</div></section>;
 }
 
