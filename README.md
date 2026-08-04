@@ -94,6 +94,21 @@ actions tied to the current ChatGPT user. Leave public content anonymous.
 - `npm test`: build the starter and verify its rendered loading skeleton
 - `npm run db:generate`: generate Drizzle migrations after schema changes
 
+## Customer accounts and secure orders
+
+The deployed food-ordering app uses the Render API and Supabase for customer accounts, checkout, order history, and the organizer dashboard.
+
+- Customer passwords are hashed with bcrypt (12 salt rounds) before being stored in `public.app_users` as `password_hash`.
+- The password, password hash, Supabase service key, and organizer password are never sent to the browser.
+- Customer orders require a signed-in account. Organizers use the separate `ADMIN_PASSWORD` stored only in Render.
+
+After applying the initial schema, run the following migration in **Supabase → SQL Editor** before deploying the authentication update:
+
+```sql
+-- Copy and run the complete contents of:
+-- supabase/migrations/20260804010000_add_customer_auth.sql
+```
+
 ## Learn More
 
 - [vinext Documentation](https://github.com/cloudflare/vinext)

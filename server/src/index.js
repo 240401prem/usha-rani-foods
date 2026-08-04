@@ -2,6 +2,7 @@ import "dotenv/config";
 import cors from "cors";
 import express from "express";
 import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
 import { createClient } from "@supabase/supabase-js";
 
 const requiredEnv = [
@@ -108,20 +109,77 @@ function toOrderResponse(order) {
   };
 }
 
+function toPublicUser(user) {
+  return {
+    id: user.id,
+    name: user.full_name,
+    email: user.email,
+    mobile: user.mobile ?? "",
+    address: user.default_address ?? "",
+  };
+}
+
+function bearerToken(request) {
+  return request.header("authorization")?.replace(/^Bearer\s+/i, "");
+}
+
+function issueCustomerToken(user) {
+  return jwt.sign(
+    { sub: user.id, role: "customer" },
+    process.env.JWT_SECRET,
+    { expiresIn: "7d" },
+  );
+}
+
 function verifyAdmin(request, response, next) {
-  const token = request.header("authorization")?.replace(/^Bearer\s+/i, "");
+  const token = bearerToken(request);
   if (!token) return response.status(401).json({ error: "Admin sign-in is required." });
 
   try {
-    request.admin = jwt.verify(token, process.env.JWT_SECRET);
+    const claims = jwt.verify(token, process.env.JWT_SECRET);
+    if (claims.role !== "organizer") throw new Error("Organizer role required");
+    request.admin = claims;
     next();
   } catch {
     return response.status(401).json({ error: "Your admin session has expired. Please sign in again." });
   }
 }
 
+function verifyCustomer(request, response, next) {
+  const token = bearerToken(request);
+  if (!token) return response.status(401).json({ error: "Please sign in to continue." });
+
+  try {
+    const claims = jwt.verify(token, process.env.JWT_SECRET);
+    if (claims.role !== "customer" || typeof claims.sub !== "string") throw new Error("Customer role required");
+    request.customer = { id: claims.sub };
+    next();
+  } catch {
+    return response.status(401).json({ error: "Your session has expired. Please sign in again." });
+  }
+}
+
 function validStatus(status) {
   return ["Pending", "Preparing", "Out for Delivery", "Delivered"].includes(status);
+}
+
+function normalizedEmail(value) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function normalizedMobile(value) {
+  return String(value ?? "").replace(/\D/g, "").slice(-10);
+}
+
+async function getCustomerById(id) {
+  const { data, error } = await supabase
+    .from("app_users")
+    .select("id, full_name, email, mobile, default_address, role, is_active")
+    .eq("id", id)
+    .single();
+  if (error) throw error;
+  if (!data.is_active || data.role !== "customer") return null;
+  return data;
 }
 
 async function seedMenuWhenEmpty() {
@@ -137,6 +195,79 @@ async function seedMenuWhenEmpty() {
 
 app.get("/health", (_request, response) => {
   response.status(200).json({ status: "ok" });
+});
+
+app.get("/", (_request, response) => {
+  response.json({ service: "Usha Rani Foods API", health: "/health" });
+});
+
+app.post("/api/auth/signup", async (request, response, next) => {
+  try {
+    const name = String(request.body?.name ?? "").trim();
+    const email = normalizedEmail(request.body?.email);
+    const mobile = normalizedMobile(request.body?.mobile);
+    const password = String(request.body?.password ?? "");
+
+    if (name.length < 2 || name.length > 80) {
+      return response.status(400).json({ error: "Please enter your full name." });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return response.status(400).json({ error: "Please enter a valid email address." });
+    }
+    if (mobile && mobile.length !== 10) {
+      return response.status(400).json({ error: "Please enter a 10-digit mobile number." });
+    }
+    if (password.length < 8 || password.length > 72) {
+      return response.status(400).json({ error: "Password must be between 8 and 72 characters." });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 12);
+    const { data: user, error } = await supabase
+      .from("app_users")
+      .insert({ full_name: name, email, mobile, password_hash: passwordHash, role: "customer" })
+      .select("id, full_name, email, mobile, default_address, role, is_active")
+      .single();
+    if (error?.code === "23505") {
+      return response.status(409).json({ error: "An account already exists for this email. Please sign in." });
+    }
+    if (error) throw error;
+
+    return response.status(201).json({ user: toPublicUser(user), token: issueCustomerToken(user) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/auth/login", async (request, response, next) => {
+  try {
+    const email = normalizedEmail(request.body?.email);
+    const password = String(request.body?.password ?? "");
+    if (!email || !password) return response.status(400).json({ error: "Email and password are required." });
+
+    const { data: user, error } = await supabase
+      .from("app_users")
+      .select("id, full_name, email, mobile, default_address, password_hash, role, is_active")
+      .eq("email", email)
+      .maybeSingle();
+    if (error) throw error;
+    if (!user || !user.is_active || user.role !== "customer" || !(await bcrypt.compare(password, user.password_hash))) {
+      return response.status(401).json({ error: "Incorrect email or password." });
+    }
+
+    return response.json({ user: toPublicUser(user), token: issueCustomerToken(user) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/auth/me", verifyCustomer, async (request, response, next) => {
+  try {
+    const user = await getCustomerById(request.customer.id);
+    if (!user) return response.status(401).json({ error: "This account is no longer available." });
+    return response.json({ user: toPublicUser(user) });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.post("/api/admin/login", async (request, response) => {
@@ -177,10 +308,24 @@ app.get("/api/orders", verifyAdmin, async (_request, response, next) => {
   }
 });
 
-app.post("/api/orders", async (request, response, next) => {
+app.get("/api/orders/me", verifyCustomer, async (request, response, next) => {
+  try {
+    const { data, error } = await supabase
+      .from("orders")
+      .select("*, order_items(*)")
+      .eq("user_id", request.customer.id)
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    return response.json({ orders: data.map(toOrderResponse) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/orders", verifyCustomer, async (request, response, next) => {
   try {
     const name = String(request.body?.name ?? "").trim();
-    const mobile = String(request.body?.mobile ?? "").replace(/\D/g, "");
+    const mobile = normalizedMobile(request.body?.mobile);
     const address = String(request.body?.address ?? "").trim();
     const paymentMethod = String(request.body?.payment ?? "Cash on delivery");
     const requestedItems = Array.isArray(request.body?.items) ? request.body.items : [];
@@ -217,10 +362,17 @@ app.post("/api/orders", async (request, response, next) => {
     const total = itemTotal + deliveryFee;
     const orderNumber = `URF-${Math.floor(2100 + Math.random() * 7900)}`;
 
+    const { error: profileError } = await supabase
+      .from("app_users")
+      .update({ full_name: name, mobile, default_address: address, updated_at: new Date().toISOString() })
+      .eq("id", request.customer.id);
+    if (profileError) throw profileError;
+
     const { data: order, error: orderError } = await supabase
       .from("orders")
       .insert({
         order_number: orderNumber,
+        user_id: request.customer.id,
         customer_name: name,
         customer_mobile: mobile,
         delivery_address: address,

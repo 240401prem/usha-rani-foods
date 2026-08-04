@@ -34,6 +34,23 @@ type Order = {
   payment: string;
 };
 
+type Account = {
+  id: string;
+  name: string;
+  email: string;
+  mobile: string;
+  address: string;
+};
+
+type AuthMode = "login" | "signup";
+
+type AuthDetails = {
+  name?: string;
+  email: string;
+  mobile?: string;
+  password: string;
+};
+
 const defaultFoods: Food[] = [
   {
     id: 1,
@@ -188,7 +205,7 @@ function orderFromApi(order: Record<string, unknown>): Order {
 export function FoodApp() {
   const [view, setView] = useState<View>("home");
   const [foods, setFoods] = useState<Food[]>(defaultFoods);
-  const [orders, setOrders] = useState<Order[]>(seededOrders);
+  const [orders, setOrders] = useState<Order[]>(API_URL ? [] : seededOrders);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [category, setCategory] = useState("All");
   const [query, setQuery] = useState("");
@@ -202,6 +219,11 @@ export function FoodApp() {
   const [ready, setReady] = useState(false);
   const [adminAuthed, setAdminAuthed] = useState(false);
   const [adminTab, setAdminTab] = useState<AdminTab>("overview");
+  const [adminToken, setAdminToken] = useState("");
+  const [account, setAccount] = useState<Account | null>(null);
+  const [authToken, setAuthToken] = useState("");
+  const [authOpen, setAuthOpen] = useState(false);
+  const [authMode, setAuthMode] = useState<AuthMode>("login");
 
   useEffect(() => {
     async function loadData() {
@@ -216,6 +238,23 @@ export function FoodApp() {
           if (!response.ok) throw new Error("Could not load the menu from the server.");
           const payload = await response.json() as { menu: Record<string, unknown>[] };
           setFoods(payload.menu.map(foodFromApi));
+
+          const savedSession = localStorage.getItem("urf-session");
+          if (savedSession) {
+            try {
+              const session = JSON.parse(savedSession) as { token?: string };
+              if (!session.token) throw new Error("Missing session token");
+              const sessionResponse = await fetch(`${API_URL}/api/auth/me`, {
+                headers: { Authorization: `Bearer ${session.token}` },
+              });
+              const sessionPayload = await sessionResponse.json() as { user?: Account };
+              if (!sessionResponse.ok || !sessionPayload.user) throw new Error("Expired session");
+              setAuthToken(session.token);
+              setAccount(sessionPayload.user);
+            } catch {
+              localStorage.removeItem("urf-session");
+            }
+          }
           return;
         }
 
@@ -246,6 +285,26 @@ export function FoodApp() {
   }, [foods, orders, favorites, dark, ready]);
 
   useEffect(() => {
+    async function loadCustomerOrders() {
+      if (!API_URL || !authToken) {
+        if (API_URL) setOrders([]);
+        return;
+      }
+      try {
+        const response = await fetch(`${API_URL}/api/orders/me`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        const payload = await response.json() as { orders?: Record<string, unknown>[]; error?: string };
+        if (!response.ok || !payload.orders) throw new Error(payload.error ?? "Could not load your orders.");
+        setOrders(payload.orders.map(orderFromApi));
+      } catch (error) {
+        setToast(error instanceof Error ? error.message : "Could not load your orders.");
+      }
+    }
+    void loadCustomerOrders();
+  }, [authToken]);
+
+  useEffect(() => {
     if (!toast) return;
     const timeout = window.setTimeout(() => setToast(""), 2800);
     return () => window.clearTimeout(timeout);
@@ -273,6 +332,42 @@ export function FoodApp() {
     setView(next);
     setCartOpen(false);
     window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function openAuth(mode: AuthMode = "login") {
+    if (!API_URL) {
+      setToast("Online accounts are available after the API URL is configured in Vercel.");
+      return;
+    }
+    setAuthMode(mode);
+    setAuthOpen(true);
+  }
+
+  function signOut() {
+    localStorage.removeItem("urf-session");
+    setAuthToken("");
+    setAccount(null);
+    setOrders([]);
+    setLastOrderId(null);
+    setToast("You have been signed out.");
+  }
+
+  async function authenticate(mode: AuthMode, details: AuthDetails) {
+    if (!API_URL) throw new Error("Online accounts are not configured yet.");
+    const response = await fetch(`${API_URL}/api/auth/${mode === "signup" ? "signup" : "login"}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(details),
+    });
+    const payload = await response.json() as { user?: Account; token?: string; error?: string };
+    if (!response.ok || !payload.user || !payload.token) {
+      throw new Error(payload.error ?? "Could not sign in. Please try again.");
+    }
+    localStorage.setItem("urf-session", JSON.stringify({ token: payload.token }));
+    setAuthToken(payload.token);
+    setAccount(payload.user);
+    setAuthOpen(false);
+    setToast(mode === "signup" ? "Account created — welcome to Usha Rani Foods!" : `Welcome back, ${payload.user.name.split(" ")[0]}!`);
   }
 
   function addToCart(food: Food, quantity = 1) {
@@ -311,6 +406,12 @@ export function FoodApp() {
     address: string;
     payment: string;
   }) {
+    if (API_URL && !authToken) {
+      setCheckoutOpen(false);
+      openAuth("login");
+      setToast("Please sign in before placing your order.");
+      return;
+    }
     const id = `URF-${Math.floor(2100 + Math.random() * 700)}`;
     let order: Order = {
       id,
@@ -327,7 +428,7 @@ export function FoodApp() {
       try {
         const response = await fetch(`${API_URL}/api/orders`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${authToken}` },
           body: JSON.stringify({ ...details, items: cart.map(({ id: itemId, quantity }) => ({ id: itemId, quantity })) }),
         });
         const payload = await response.json() as { order?: Record<string, unknown>; error?: string };
@@ -342,12 +443,89 @@ export function FoodApp() {
     setCart([]);
     setCheckoutOpen(false);
     setCartOpen(false);
-    setLastOrderId(id);
+    setLastOrderId(order.id);
     goTo("orders");
     setToast(`Order ${id} confirmed — we’ll keep you updated`);
   }
 
   const activeOrder = orders.find((order) => order.id === lastOrderId) ?? orders[0];
+
+  async function loadAdminOrders(token: string) {
+    const response = await fetch(`${API_URL}/api/orders`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json() as { orders?: Record<string, unknown>[]; error?: string };
+    if (!response.ok || !payload.orders) throw new Error(payload.error ?? "Could not load the kitchen orders.");
+    setOrders(payload.orders.map(orderFromApi));
+  }
+
+  async function adminLogin(password: string) {
+    if (!API_URL) throw new Error("The organizer dashboard needs the online API URL.");
+    const response = await fetch(`${API_URL}/api/admin/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    const payload = await response.json() as { token?: string; error?: string };
+    if (!response.ok || !payload.token) throw new Error(payload.error ?? "Could not sign in.");
+    await loadAdminOrders(payload.token);
+    setAdminToken(payload.token);
+    setAdminAuthed(true);
+  }
+
+  async function saveAdminFood(editing: Food | null, details: Omit<Food, "id" | "rating">) {
+    if (!API_URL || !adminToken) throw new Error("Please sign in again to manage the menu.");
+    const body = {
+      name: details.name,
+      tamil_name: details.tamil,
+      price: details.price,
+      category: details.category,
+      rating: editing?.rating ?? 4.8,
+      badge: details.tag ?? "",
+      description: details.description,
+      image_url: details.image,
+      sort_order: foods.length + 1,
+    };
+    const response = await fetch(`${API_URL}/api/menu${editing ? `/${editing.id}` : ""}`, {
+      method: editing ? "PATCH" : "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json() as { item?: Record<string, unknown>; error?: string };
+    if (!response.ok || !payload.item) throw new Error(payload.error ?? "Could not save this menu item.");
+    const saved = foodFromApi(payload.item);
+    setFoods((current) => editing ? current.map((food) => food.id === editing.id ? saved : food) : [...current, saved]);
+    setToast(`${saved.name} ${editing ? "updated" : "added to the menu"}`);
+  }
+
+  async function deleteAdminFood(id: FoodId) {
+    if (!API_URL || !adminToken) throw new Error("Please sign in again to manage the menu.");
+    const response = await fetch(`${API_URL}/api/menu/${id}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    if (!response.ok) {
+      const payload = await response.json() as { error?: string };
+      throw new Error(payload.error ?? "Could not remove this menu item.");
+    }
+    setFoods((current) => current.filter((food) => food.id !== id));
+    setToast("Dish removed from the menu");
+  }
+
+  async function updateAdminOrderStatus(id: string, status: OrderStatus) {
+    if (!API_URL || !adminToken) throw new Error("Please sign in again to update orders.");
+    const order = orders.find((item) => item.id === id);
+    const response = await fetch(`${API_URL}/api/orders/${order?.databaseId ?? id}/status`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ status }),
+    });
+    const payload = await response.json() as { order?: Record<string, unknown>; error?: string };
+    if (!response.ok || !payload.order) throw new Error(payload.error ?? "Could not update the order.");
+    const updated = orderFromApi(payload.order);
+    setOrders((current) => current.map((item) => item.id === id ? updated : item));
+    setToast(`${updated.customer} notified: order is ${status.toLowerCase()}`);
+  }
 
   return (
     <div className={dark ? "app dark" : "app"}>
@@ -360,6 +538,9 @@ export function FoodApp() {
         onNavigate={goTo}
         onCart={() => setCartOpen(true)}
         onDark={() => setDark((value) => !value)}
+        account={account}
+        onAuth={() => openAuth("login")}
+        onSignOut={signOut}
       />
 
       <main>
@@ -396,14 +577,16 @@ export function FoodApp() {
             tab={adminTab}
             foods={foods}
             orders={orders}
-            onLogin={() => setAdminAuthed(true)}
+            onLogin={(password = "") => adminLogin(password)}
             onLogout={() => {
               setAdminAuthed(false);
+              setAdminToken("");
               setAdminTab("overview");
             }}
             onTab={setAdminTab}
-            onFoods={setFoods}
-            onOrders={setOrders}
+            onSaveFood={saveAdminFood}
+            onDeleteFood={deleteAdminFood}
+            onStatus={updateAdminOrderStatus}
             onToast={setToast}
           />
         )}
@@ -426,14 +609,31 @@ export function FoodApp() {
           onClose={() => setCartOpen(false)}
           onQuantity={updateQuantity}
           onMenu={() => goTo("menu")}
-          onCheckout={() => setCheckoutOpen(true)}
+          onCheckout={() => {
+            if (API_URL && !account) {
+              setCartOpen(false);
+              openAuth("login");
+              setToast("Sign in or create an account to checkout.");
+              return;
+            }
+            setCheckoutOpen(true);
+          }}
         />
       )}
       {checkoutOpen && (
         <CheckoutDialog
           total={cartTotal}
+          account={account}
           onClose={() => setCheckoutOpen(false)}
           onPlaceOrder={placeOrder}
+        />
+      )}
+      {authOpen && (
+        <AuthDialog
+          mode={authMode}
+          onMode={setAuthMode}
+          onClose={() => setAuthOpen(false)}
+          onSubmit={authenticate}
         />
       )}
       {toast && (
@@ -466,6 +666,9 @@ function Header({
   onNavigate,
   onCart,
   onDark,
+  account,
+  onAuth,
+  onSignOut,
 }: {
   view: View;
   cartCount: number;
@@ -475,6 +678,9 @@ function Header({
   onNavigate: (view: View) => void;
   onCart: () => void;
   onDark: () => void;
+  account: Account | null;
+  onAuth: () => void;
+  onSignOut: () => void;
 }) {
   return (
     <header className="site-header">
@@ -505,6 +711,14 @@ function Header({
           <button className="icon-button" onClick={onDark} aria-label="Toggle dark mode">
             {dark ? "☀" : "☾"}
           </button>
+          {account ? (
+            <button className="account-button" onClick={onSignOut} title="Sign out">
+              <span>{account.name.split(" ").map((part) => part[0]).join("").slice(0, 2)}</span>
+              <b>{account.name.split(" ")[0]}</b>
+            </button>
+          ) : (
+            <button className="login-button" onClick={onAuth}>Log in</button>
+          )}
           <button className="organizer-button" onClick={() => onNavigate("admin")}>Organizer</button>
           <button className="cart-button" onClick={onCart} aria-label={`Open cart with ${cartCount} items`}>
             <span>Bag</span>
@@ -761,7 +975,52 @@ function CartDrawer({ cart, subtotal, deliveryFee, total, onClose, onQuantity, o
   );
 }
 
-function CheckoutDialog({ total, onClose, onPlaceOrder }: { total: number; onClose: () => void; onPlaceOrder: (details: { name: string; mobile: string; address: string; payment: string }) => void | Promise<void> }) {
+function AuthDialog({ mode, onMode, onClose, onSubmit }: { mode: AuthMode; onMode: (mode: AuthMode) => void; onClose: () => void; onSubmit: (mode: AuthMode, details: AuthDetails) => Promise<void> }) {
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const password = String(data.get("password") ?? "");
+    const confirmPassword = String(data.get("confirmPassword") ?? "");
+    if (mode === "signup" && password !== confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
+    setSubmitting(true);
+    setError("");
+    try {
+      await onSubmit(mode, {
+        name: String(data.get("name") ?? "").trim(),
+        email: String(data.get("email") ?? "").trim(),
+        mobile: String(data.get("mobile") ?? "").trim(),
+        password,
+      });
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Could not continue. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop auth-backdrop" onMouseDown={onClose}>
+      <form className="auth-dialog" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
+        <div className="drawer-head"><div><span className="kicker">YOUR ACCOUNT</span><h2>{mode === "login" ? "Welcome back" : "Create your account"}</h2></div><button type="button" onClick={onClose}>×</button></div>
+        <p className="auth-intro">{mode === "login" ? "Sign in to place orders and track them from any device." : "Create an account for secure checkout and order updates."}</p>
+        {mode === "signup" && <div className="form-grid auth-grid"><label>Full name<input name="name" autoComplete="name" required autoFocus /></label><label>Mobile number<input name="mobile" inputMode="tel" autoComplete="tel" placeholder="10-digit number" /></label></div>}
+        <div className="form-grid auth-grid"><label className="full-field">Email address<input name="email" type="email" autoComplete="email" required autoFocus={mode === "login"} /></label><label className="full-field">Password<input name="password" type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={8} required /></label>{mode === "signup" && <label className="full-field">Confirm password<input name="confirmPassword" type="password" autoComplete="new-password" minLength={8} required /></label>}</div>
+        {error && <p className="form-error">{error}</p>}
+        <button className="primary-button full-button" type="submit" disabled={submitting}>{submitting ? "Please wait…" : mode === "login" ? "Sign in →" : "Create account →"}</button>
+        <p className="auth-switch">{mode === "login" ? "New to Usha Rani Foods?" : "Already have an account?"} <button type="button" onClick={() => { setError(""); onMode(mode === "login" ? "signup" : "login"); }}>{mode === "login" ? "Sign up" : "Log in"}</button></p>
+        <p className="secure-note">Your password is securely hashed before it is stored.</p>
+      </form>
+    </div>
+  );
+}
+
+function CheckoutDialog({ total, account, onClose, onPlaceOrder }: { total: number; account: Account | null; onClose: () => void; onPlaceOrder: (details: { name: string; mobile: string; address: string; payment: string }) => void | Promise<void> }) {
   const [error, setError] = useState("");
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -774,22 +1033,47 @@ function CheckoutDialog({ total, onClose, onPlaceOrder }: { total: number; onClo
     <div className="modal-backdrop checkout-backdrop" onMouseDown={onClose}>
       <form className="checkout-dialog" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
         <div className="drawer-head"><div><span className="kicker">ALMOST THERE</span><h2>Delivery details</h2></div><button type="button" onClick={onClose}>×</button></div>
-        <div className="form-grid"><label>Full name<input name="name" placeholder="e.g. Kavitha R" autoFocus /></label><label>Mobile number<input name="mobile" inputMode="tel" placeholder="10-digit number" /></label><label className="full-field">Delivery address<textarea name="address" rows={3} placeholder="Door no., street, area and landmark" /></label></div>
+        <div className="form-grid"><label>Full name<input name="name" placeholder="e.g. Kavitha R" defaultValue={account?.name} autoFocus /></label><label>Mobile number<input name="mobile" inputMode="tel" placeholder="10-digit number" defaultValue={account?.mobile} /></label><label className="full-field">Delivery address<textarea name="address" rows={3} placeholder="Door no., street, area and landmark" defaultValue={account?.address} /></label></div>
         <fieldset><legend>Payment method</legend><label className="payment-option"><input type="radio" name="payment" value="Cash on delivery" defaultChecked /><span>₹</span><div><b>Cash on delivery</b><small>Pay when your order arrives</small></div></label><label className="payment-option"><input type="radio" name="payment" value="UPI" /><span>U</span><div><b>UPI on delivery</b><small>Scan and pay securely at the door</small></div></label></fieldset>
         {error && <p className="form-error">{error}</p>}
-        <button className="checkout-button place-order" type="submit"><span><small>TOTAL</small><b>{money(total)}</b></span><strong>Place order →</strong></button><p className="secure-note">✓ Your order details stay on this device in this demo.</p>
+        <button className="checkout-button place-order" type="submit"><span><small>TOTAL</small><b>{money(total)}</b></span><strong>Place order →</strong></button><p className="secure-note">✓ Your secure account keeps your order history available across devices.</p>
       </form>
     </div>
   );
 }
 
-function AdminView({ authed, tab, foods, orders, onLogin, onLogout, onTab, onFoods, onOrders, onToast }: { authed: boolean; tab: AdminTab; foods: Food[]; orders: Order[]; onLogin: () => void; onLogout: () => void; onTab: (tab: AdminTab) => void; onFoods: (foods: Food[]) => void; onOrders: (orders: Order[]) => void; onToast: (message: string) => void }) {
-  const [pin, setPin] = useState("");
-  const [loginError, setLoginError] = useState("");
+function OrganizerLogin({ onLogin }: { onLogin: (password?: string) => Promise<void> }) {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmitting(true);
+    setError("");
+    try {
+      await onLogin(password);
+    } catch (loginError) {
+      setError(loginError instanceof Error ? loginError.message : "Could not sign in.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return <section className="admin-login-page"><div className="admin-login-brand"><Brand /></div><form className="admin-login-card" onSubmit={submit}><span className="admin-lock">●</span><span className="kicker">ORGANIZER ACCESS</span><h1>Welcome back.</h1><p>Sign in to manage today’s kitchen, customer orders and menu.</p><label>Organizer password<input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" required autoFocus /></label>{error && <p className="form-error">{error}</p>}<button className="primary-button" type="submit" disabled={submitting}>{submitting ? "Signing in…" : "Open dashboard →"}</button></form></section>;
+}
+
+function AdminView({ authed, tab, foods, orders, onLogin, onLogout, onTab, onSaveFood, onDeleteFood, onStatus, onToast }: { authed: boolean; tab: AdminTab; foods: Food[]; orders: Order[]; onLogin: (password?: string) => Promise<void>; onLogout: () => void; onTab: (tab: AdminTab) => void; onSaveFood: (editing: Food | null, details: Omit<Food, "id" | "rating">) => Promise<void>; onDeleteFood: (id: FoodId) => Promise<void>; onStatus: (id: string, status: OrderStatus) => Promise<void>; onToast: (message: string) => void }) {
   const [editing, setEditing] = useState<Food | null>(null);
   const [foodFormOpen, setFoodFormOpen] = useState(false);
   const revenue = orders.filter((order) => order.status === "Delivered").reduce((total, order) => total + order.total, 0);
 
+  if (!authed) {
+    return <OrganizerLogin onLogin={onLogin} />;
+  }
+
+  /* Legacy demo PIN interface intentionally removed. Organizer access is now API-authenticated. */
+  /*
   if (!authed) {
     return (
       <section className="admin-login-page">
@@ -805,21 +1089,23 @@ function AdminView({ authed, tab, foods, orders, onLogin, onLogout, onTab, onFoo
     );
   }
 
-  function saveFood(details: Omit<Food, "id" | "rating">) {
-    if (editing) {
-      onFoods(foods.map((food) => food.id === editing.id ? { ...food, ...details } : food));
-      onToast(`${details.name} updated`);
-    } else {
-      onFoods([...foods, { ...details, id: Date.now(), rating: 4.8 }]);
-      onToast(`${details.name} added to the menu`);
+  */
+  async function saveFood(details: Omit<Food, "id" | "rating">) {
+    try {
+      await onSaveFood(editing, details);
+      setEditing(null);
+      setFoodFormOpen(false);
+    } catch (saveError) {
+      onToast(saveError instanceof Error ? saveError.message : "Could not save this menu item.");
     }
-    setEditing(null); setFoodFormOpen(false);
   }
 
-  function updateStatus(id: string, status: OrderStatus) {
-    onOrders(orders.map((order) => order.id === id ? { ...order, status } : order));
-    const order = orders.find((item) => item.id === id);
-    onToast(`${order?.customer ?? "Customer"} notified: order is ${status.toLowerCase()}`);
+  async function updateStatus(id: string, status: OrderStatus) {
+    try {
+      await onStatus(id, status);
+    } catch (statusError) {
+      onToast(statusError instanceof Error ? statusError.message : "Could not update this order.");
+    }
   }
 
   return (
@@ -834,7 +1120,7 @@ function AdminView({ authed, tab, foods, orders, onLogin, onLogout, onTab, onFoo
         <div className="admin-topbar"><div><small>MONDAY, 3 AUGUST</small><h1>{tab === "overview" ? "Good afternoon, Usha!" : tab[0].toUpperCase() + tab.slice(1)}</h1></div><div><span className="kitchen-status">● Kitchen open</span><button className="admin-notification">♢<b>{orders.filter((order) => order.status === "Pending").length}</b></button></div></div>
 
         {tab === "overview" && <AdminOverview orders={orders} revenue={revenue} onTab={onTab} />}
-        {tab === "menu" && <AdminMenu foods={foods} onAdd={() => { setEditing(null); setFoodFormOpen(true); }} onEdit={(food) => { setEditing(food); setFoodFormOpen(true); }} onDelete={(id) => { if (window.confirm("Remove this dish from the menu?")) { onFoods(foods.filter((food) => food.id !== id)); onToast("Dish removed from the menu"); } }} />}
+        {tab === "menu" && <AdminMenu foods={foods} onAdd={() => { setEditing(null); setFoodFormOpen(true); }} onEdit={(food) => { setEditing(food); setFoodFormOpen(true); }} onDelete={async (id) => { if (window.confirm("Remove this dish from the menu?")) { try { await onDeleteFood(id); } catch (deleteError) { onToast(deleteError instanceof Error ? deleteError.message : "Could not remove this menu item."); } } }} />}
         {tab === "orders" && <AdminOrders orders={orders} onStatus={updateStatus} />}
         {tab === "customers" && <AdminCustomers orders={orders} />}
       </div>
