@@ -330,6 +330,10 @@ export function FoodApp() {
   const cartTotal = subtotal + deliveryFee;
 
   function goTo(next: View) {
+    if (next === "admin" && account) {
+      setToast("Sign out of your customer account before using organizer sign-in.");
+      return;
+    }
     setView(next);
     setCartOpen(false);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -379,6 +383,7 @@ export function FoodApp() {
     localStorage.setItem("urf-session", JSON.stringify({ token: payload.token }));
     setAuthToken(payload.token);
     setAccount(payload.user);
+    setView("home");
     setAuthOpen(false);
     setToast(mode === "signup" ? "Account created — welcome to Usha Rani Foods!" : `Welcome back, ${payload.user.name.split(" ")[0]}!`);
   }
@@ -473,6 +478,7 @@ export function FoodApp() {
   }
 
   async function adminLogin(password: string) {
+    if (account) throw new Error("Sign out of the customer account before organizer sign-in.");
     if (!API_URL) throw new Error("The organizer dashboard needs the online API URL.");
     const response = await fetch(`${API_URL}/api/admin/login`, {
       method: "POST",
@@ -603,7 +609,7 @@ export function FoodApp() {
 
       {view !== "admin" && <Footer onNavigate={goTo} />}
       {view !== "admin" && (
-        <MobileNav view={view} cartCount={cartCount} onNavigate={goTo} onCart={() => setCartOpen(true)} />
+        <MobileNav view={view} cartCount={cartCount} onNavigate={goTo} onCart={() => setCartOpen(true)} showOrganizer={!account} />
       )}
 
       {selectedFood && (
@@ -735,7 +741,7 @@ function Header({
           ) : (
             <button className="login-button" onClick={onAuth}>Log in</button>
           )}
-          <button className="organizer-button" onClick={() => onNavigate("admin")}>Organizer</button>
+          {!account && <button className="organizer-button" onClick={() => onNavigate("admin")}>Organizer sign in</button>}
           <button className="cart-button" onClick={onCart} aria-label={`Open cart with ${cartCount} items`}>
             <span>Bag</span>
             {cartCount > 0 && <b>{cartCount}</b>}
@@ -1203,7 +1209,19 @@ function FoodForm({ food, onClose, onSave }: { food: Food | null; onClose: () =>
   return <div className="modal-backdrop" onMouseDown={onClose}><form className="food-form-dialog" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}><div className="drawer-head"><div><span className="kicker">MENU EDITOR</span><h2>{food ? "Edit food item" : "Add food item"}</h2></div><button type="button" onClick={onClose}>×</button></div><label className="image-upload">{/* eslint-disable-next-line @next/next/no-img-element */}<img src={image} alt="Food preview" /><span>Choose food photo<input type="file" accept="image/*" onChange={(event) => { const file = event.target.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => setImage(String(reader.result)); reader.readAsDataURL(file); }} /></span></label><div className="form-grid"><label>Dish name<input name="name" defaultValue={food?.name} required /></label><label>Tamil name<input name="tamil" defaultValue={food?.tamil} /></label><label>Price (₹)<input name="price" type="number" min="1" defaultValue={food?.price} required /></label><label>Category<select name="category" defaultValue={food?.category}>{categories.slice(1).map((item) => <option key={item}>{item}</option>)}</select></label><label className="full-field">Short description<textarea name="description" rows={3} defaultValue={food?.description} required /></label><label className="full-field">Badge text<input name="tag" defaultValue={food?.tag} placeholder="e.g. Bestseller" /></label></div><button className="primary-button full-button" type="submit">{food ? "Save changes" : "Add to menu"} →</button></form></div>;
 }
 
-function MobileNav({ view, cartCount, onNavigate, onCart }: { view: View; cartCount: number; onNavigate: (view: View) => void; onCart: () => void }) {
+function MobileNav({ view, cartCount, onNavigate, onCart, showOrganizer }: { view: View; cartCount: number; onNavigate: (view: View) => void; onCart: () => void; showOrganizer: boolean }) {
+  return (
+    <nav className={showOrganizer ? "mobile-nav" : "mobile-nav customer-mobile-nav"} aria-label="Mobile navigation">
+      <button className={view === "home" ? "active" : ""} onClick={() => onNavigate("home")}><span>&#8962;</span>Home</button>
+      <button className={view === "menu" ? "active" : ""} onClick={() => onNavigate("menu")}><span>&#9671;</span>Menu</button>
+      <button onClick={onCart} className="mobile-cart"><i>Bag</i>{cartCount > 0 && <b>{cartCount}</b>}<small>Cart</small></button>
+      <button className={view === "orders" ? "active" : ""} onClick={() => onNavigate("orders")}><span>&#9678;</span>Orders</button>
+      {showOrganizer && <button className={view === "admin" ? "active" : ""} onClick={() => onNavigate("admin")}><span>&#9817;</span>Organizer</button>}
+    </nav>
+  );
+}
+
+function LegacyMobileNav({ view, cartCount, onNavigate, onCart }: { view: View; cartCount: number; onNavigate: (view: View) => void; onCart: () => void }) {
   return <nav className="mobile-nav" aria-label="Mobile navigation"><button className={view === "home" ? "active" : ""} onClick={() => onNavigate("home")}><span>⌂</span>Home</button><button className={view === "menu" ? "active" : ""} onClick={() => onNavigate("menu")}><span>◇</span>Menu</button><button onClick={onCart} className="mobile-cart"><i>Bag</i>{cartCount > 0 && <b>{cartCount}</b>}<small>Cart</small></button><button className={view === "orders" ? "active" : ""} onClick={() => onNavigate("orders")}><span>◎</span>Orders</button><button className={view === "admin" ? "active" : ""} onClick={() => onNavigate("admin")}><span>♙</span>Admin</button></nav>;
 }
 
