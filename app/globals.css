@@ -123,4 +123,12 @@ a { color: inherit; text-decoration: none; }
 .auth-switch { margin: 17px 0 0; color: var(--muted); font-size: 10px; text-align: center; }
 .auth-switch button { color: var(--orange); background: transparent; font: inherit; font-weight: 800; }
 .auth-dialog .secure-note { margin-top: 12px; }
+.logout-dialog { width: min(360px, 100%); padding: 30px; border-radius: 18px; color: var(--ink); background: var(--card); box-shadow: 0 28px 80px rgba(0,0,0,.3); text-align: center; }
+.logout-icon { display: grid; width: 44px; height: 44px; place-items: center; margin: 0 auto 14px; border-radius: 13px; color: var(--orange); background: #fff0e3; font-size: 21px; font-weight: 900; }
+.logout-dialog h2 { margin: 0; font-family: Georgia, serif; font-size: 28px; letter-spacing: -.04em; }
+.logout-dialog p { margin: 10px 0 24px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.logout-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.logout-actions button { min-height: 42px; border-radius: 9px; font-size: 11px; font-weight: 800; }
+.logout-cancel { color: var(--ink); background: var(--cream-deep); }
+.logout-confirm { color: #fff; background: #bd4f42; }
 @media (max-width: 760px) { .login-button { height: 33px; padding: 0 9px; font-size: 10px; }.account-button { height: 33px; padding-right: 6px; }.account-button b { display: none; }.account-button > span { width: 25px; height: 25px; }.auth-dialog { padding: 21px; } }

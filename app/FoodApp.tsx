@@ -224,6 +224,7 @@ export function FoodApp() {
   const [authToken, setAuthToken] = useState("");
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState<AuthMode>("login");
+  const [logoutConfirm, setLogoutConfirm] = useState<"customer" | "organizer" | null>(null);
 
   useEffect(() => {
     async function loadData() {
@@ -350,6 +351,18 @@ export function FoodApp() {
     setOrders([]);
     setLastOrderId(null);
     setToast("You have been signed out.");
+  }
+
+  function confirmLogout() {
+    if (logoutConfirm === "customer") {
+      signOut();
+    } else if (logoutConfirm === "organizer") {
+      setAdminAuthed(false);
+      setAdminToken("");
+      setAdminTab("overview");
+      setToast("Organizer session signed out.");
+    }
+    setLogoutConfirm(null);
   }
 
   async function authenticate(mode: AuthMode, details: AuthDetails) {
@@ -540,7 +553,7 @@ export function FoodApp() {
         onDark={() => setDark((value) => !value)}
         account={account}
         onAuth={() => openAuth("login")}
-        onSignOut={signOut}
+        onSignOut={() => setLogoutConfirm("customer")}
       />
 
       <main>
@@ -578,11 +591,7 @@ export function FoodApp() {
             foods={foods}
             orders={orders}
             onLogin={(password = "") => adminLogin(password)}
-            onLogout={() => {
-              setAdminAuthed(false);
-              setAdminToken("");
-              setAdminTab("overview");
-            }}
+            onLogout={() => setLogoutConfirm("organizer")}
             onTab={setAdminTab}
             onSaveFood={saveAdminFood}
             onDeleteFood={deleteAdminFood}
@@ -634,6 +643,13 @@ export function FoodApp() {
           onMode={setAuthMode}
           onClose={() => setAuthOpen(false)}
           onSubmit={authenticate}
+        />
+      )}
+      {logoutConfirm && (
+        <LogoutConfirmation
+          accountName={logoutConfirm === "customer" ? account?.name : "Organizer"}
+          onCancel={() => setLogoutConfirm(null)}
+          onConfirm={confirmLogout}
         />
       )}
       {toast && (
@@ -971,6 +987,22 @@ function CartDrawer({ cart, subtotal, deliveryFee, total, onClose, onQuantity, o
           <><div className="cart-items">{cart.map((item) => <div className="cart-item" key={item.id}>{/* eslint-disable-next-line @next/next/no-img-element */}<img src={item.image} alt="" /><div><b>{item.name}</b><small>{money(item.price)} each</small><div className="quantity-control small"><button onClick={() => onQuantity(item.id, -1)}>−</button><b>{item.quantity}</b><button onClick={() => onQuantity(item.id, 1)}>+</button></div></div><strong>{money(item.price * item.quantity)}</strong></div>)}</div><div className="coupon-box"><span>◇</span><div><b>Have a coupon?</b><small>USHA50 applies to your first order</small></div><button>Apply</button></div><div className="bill-details"><h3>Bill details</h3><div><span>Item total</span><b>{money(subtotal)}</b></div><div><span>Delivery fee</span><b>{deliveryFee ? money(deliveryFee) : <em>FREE</em>}</b></div><div className="grand-total"><span>To pay</span><b>{money(total)}</b></div></div><button className="checkout-button" onClick={onCheckout}><span><small>TO PAY</small><b>{money(total)}</b></span><strong>Checkout →</strong></button></>
         )}
       </aside>
+    </div>
+  );
+}
+
+function LogoutConfirmation({ accountName, onCancel, onConfirm }: { accountName?: string; onCancel: () => void; onConfirm: () => void }) {
+  return (
+    <div className="modal-backdrop logout-backdrop" onMouseDown={onCancel}>
+      <section className="logout-dialog" role="dialog" aria-modal="true" aria-labelledby="logout-title" onMouseDown={(event) => event.stopPropagation()}>
+        <span className="logout-icon">↗</span>
+        <h2 id="logout-title">Log out?</h2>
+        <p>{accountName ? `Are you sure you want to log out of ${accountName}'s account?` : "Are you sure you want to log out?"}</p>
+        <div className="logout-actions">
+          <button className="logout-cancel" type="button" onClick={onCancel} autoFocus>Cancel</button>
+          <button className="logout-confirm" type="button" onClick={onConfirm}>Log out</button>
+        </div>
+      </section>
     </div>
   );
 }
